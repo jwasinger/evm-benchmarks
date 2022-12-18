@@ -8,21 +8,14 @@ EVMMAX_ARITH_ITER_COUNT = 1
 MAX_LIMBS = 11
 
 EVMMAX_ARITH_OPS = {
-    "SETMODMAX": "0c",
-    "ADDMODMAX": "0d",
-    "SUBMODMAX": "0e",
-    "MULMONTMAX": "0f",
+    "ADDMODX": "22",
+    "SUBMODX": "23",
+    "MULMONTX": "24",
 }
 
 LIMB_SIZE = 8
 
-SETMOD_OP = "0c"
-
-EVMMAX_ARITH_OPS = {
-    "ADDMODMAX": "0d",
-    "SUBMODMAX": "0e",
-    "MULMONTMAX": "0f",
-}
+SETMOD_OP = "21"
 
 EVM_OPS = {
     "POP": "50",
@@ -65,14 +58,14 @@ def int_to_evm_words(val: int, evm384_limb_count: int) -> [str]:
         if len(limb_hex) % 2 != 0:
             limb_hex = "0" + limb_hex
 
-        limb_hex = reverse_endianess(limb_hex)
+        #limb_hex = reverse_endianess(limb_hex)
         if len(limb_hex) < 64:
             limb_hex += (64 - len(limb_hex)) * "0"
 
         result.append(limb_hex)
 
-    if len(result) * 32 < evm384_limb_count * LIMB_SIZE:
-        result = ['00'] * math.ceil((evm384_limb_count * LIMB_SIZE - len(result) * 32) / 32) + result
+    # if len(result) * 32 < evm384_limb_count * LIMB_SIZE:
+    #    result = ['00'] * math.ceil((evm384_limb_count * LIMB_SIZE - len(result) * 32) / 32) + result
 
     return list(reversed(result))
 
@@ -132,10 +125,18 @@ def gen_encode_evmmax_bytes(*args):
         result += b1
     return result
 
+def encode_single_byte(val: int) -> str:
+    assert val < 256, "val mus tbe representable as a byte"
+    result = hex(val)[2:]
+    if len(result) == 1:
+        result = '0' + result
+    return result
+
 def gen_setmod(slot: int, mod: int) -> str:
     limb_count = calc_limb_count(mod)
     result = gen_mstore_evmmax_elem(slot, mod, limb_count)
-    result += gen_push_literal(gen_encode_evmmax_bytes(limb_count, slot))
+    result += gen_push_literal(encode_single_byte(limb_count))
+    result += gen_push_literal(encode_single_byte(slot))
     result += SETMOD_OP
     return result
 
@@ -168,18 +169,18 @@ def worst_case_submodmax_inputs(limb_count: int) -> (int, int):
 
 # generate the slowest inputs for the maximum modulus representable by limb_count limbs
 def gen_evmmax_worst_input(op: str, limb_count: int) -> (int, int):
-    if op == "MULMONTMAX":
+    if op == "MULMONTX":
         # TODO generate inputs to make the final subtraction happen
         return worst_case_mulmontmax_input(limb_count)
-    elif op == "ADDMODMAX":
+    elif op == "ADDMODX":
         return worst_case_addmodmax_inputs(limb_count)
-    elif op == "SUBMODMAX":
+    elif op == "SUBMODX":
         return worst_case_submodmax_inputs(limb_count)
     else:
         raise Exception("unknown evmmax arith op")
 
 def gen_evmmax_op(op: str, out_slot: int, x_slot: int, y_slot: int) -> str:
-    return gen_push_literal(gen_encode_evmmax_bytes(out_slot, x_slot, y_slot)) + EVMMAX_ARITH_OPS[op]
+    return EVMMAX_ARITH_OPS[op] + gen_encode_evmmax_bytes(out_slot, x_slot, y_slot)
 
 MAX_CONTRACT_SIZE = 24576
 
@@ -201,7 +202,7 @@ def gen_arith_loop_benchmark(op: str, limb_count: str) -> str:
 
     empty_bench_len = int(len(gen_loop().format(bench_start, "", gen_push_int(258))) / 2)
     free_size = MAX_CONTRACT_SIZE - empty_bench_len
-    iter_size = 5 # PUSH3 + 3byte immediate + EVMMAX_ARITH_OPCODE
+    iter_size = 4 # EVMMAX_ARITH_OPCODE + 3 byte immediate
     # iter_count = math.floor(free_size / 5)
     # import pdb; pdb.set_trace()
     iter_count = 5000
@@ -268,25 +269,26 @@ def bench_run(benches):
         for i in range(limb_count_min, limb_count_max + 1):
             evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(op_name, i) 
 
-            push3_pop_bench_time = bench_geth(gen_push3_pop_loop_benchmark(evmmax_op_count))
             setmod_est_time = 0 # TODO
 
-            est_time = math.ceil((evmmax_bench_time - push3_pop_bench_time - setmod_est_time) / (evmmax_op_count * LOOP_ITERATIONS))
+            est_time = math.ceil((evmmax_bench_time) / (evmmax_op_count * LOOP_ITERATIONS))
             #print("{} - {} limbs - {} ns/op".format(arith_op_name, limb_count, est_time))
             print("{},{},{}".format(op_name, limb_count, est_time))
 
 def default_run():
     #print("op name, limb count, estimated runtime (ns)")
-    for arith_op_name in ["ADDMODMAX", "SUBMODMAX", "MULMONTMAX"]:
-        for limb_count in range(1, 12):
-            evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(arith_op_name, limb_count) 
+    print("op name, input size (in 8-byte increments), opcode runtime est (ns)")
+    for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
+        for limb_count in range(1, 17):
+            for i in range(5):
+                evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(arith_op_name, limb_count) 
 
-            push3_pop_bench_time = bench_geth(gen_push3_pop_loop_benchmark(evmmax_op_count))
-            setmod_est_time = 0 # TODO
+                #push3_pop_bench_time = bench_geth(gen_push3_pop_loop_benchmark(evmmax_op_count))
+                setmod_est_time = 0 # TODO
 
-            est_time = math.ceil((evmmax_bench_time - push3_pop_bench_time - setmod_est_time) / (evmmax_op_count * LOOP_ITERATIONS))
-            #print("{} - {} limbs - {} ns/op".format(arith_op_name, limb_count, est_time))
-            print("{},{},{}".format(arith_op_name, limb_count, est_time))
+                est_time = round((evmmax_bench_time - setmod_est_time) / (evmmax_op_count * LOOP_ITERATIONS), 2)
+                #print("{} - {} limbs - {} ns/op".format(arith_op_name, limb_count, est_time))
+                print("{},{},{}".format(arith_op_name, limb_count, est_time))
         #print()
 
 if __name__ == "__main__":
@@ -294,7 +296,8 @@ if __name__ == "__main__":
         default_run()
     elif len(sys.argv) >= 2:
         op = sys.argv[1]
-        if op != "ADDMODMAX" and op != "SUBMODMAX" and op != "MULMONTMAX":
+        if op != "ADDMODX" and op != "SUBMODX" and op != "MULMONTX":
+            print(op)
             raise Exception("unknown op")
 
         limb_count = int(sys.argv[2])
