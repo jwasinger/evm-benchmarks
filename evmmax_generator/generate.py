@@ -135,6 +135,7 @@ def encode_single_byte(val: int) -> str:
 def gen_setmod(slot: int, mod: int) -> str:
     limb_count = calc_limb_count(mod)
     result = gen_mstore_evmmax_elem(slot, mod, limb_count)
+    result += gen_push_literal(encode_single_byte(0))
     result += gen_push_literal(encode_single_byte(limb_count))
     result += gen_push_literal(encode_single_byte(slot))
     result += SETMOD_OP
