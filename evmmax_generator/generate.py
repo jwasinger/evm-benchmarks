@@ -5,7 +5,7 @@ import subprocess
 
 EVMMAX_ARITH_ITER_COUNT = 1
 
-MAX_LIMBS = 11
+MAX_LIMBS = 16
 
 EVMMAX_ARITH_OPS = {
     "ADDMODX": "22",
@@ -292,10 +292,20 @@ def default_run():
                 print("{},{},{}".format(arith_op_name, limb_count, est_time))
         #print()
 
+def bench_one(op, start, end):
+    for limb_count in range(start, end+1):
+        for i in range(5):
+            evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(op, limb_count) 
+
+            setmod_est_time = 0 # TODO
+
+            est_time = round((evmmax_bench_time - setmod_est_time) / (evmmax_op_count * LOOP_ITERATIONS), 2)
+            print("{},{},{}".format(op, limb_count, est_time))
+
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         default_run()
-    elif len(sys.argv) >= 2:
+    elif len(sys.argv) == 2:
         op = sys.argv[1]
         if op != "ADDMODX" and op != "SUBMODX" and op != "MULMONTX":
             print(op)
@@ -312,7 +322,11 @@ if __name__ == "__main__":
         else:
             bench_code, evmmax_op_count = gen_arith_loop_benchmark(op, limb_count)
             bench_run([(op, limb_count, limb_count)])
-
+    elif len(sys.argv) == 4:
+        op = sys.argv[1]
+        start = int(sys.argv[2])
+        end = int(sys.argv[3])
+        bench_one(op, start, end)
     else:
         print("too many args")
 
