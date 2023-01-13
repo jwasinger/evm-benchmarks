@@ -2,6 +2,7 @@ import math
 import os
 import sys
 import subprocess
+import random
 
 EVMMAX_ARITH_ITER_COUNT = 1
 
@@ -102,7 +103,7 @@ def reverse_endianess(val: str):
     return result
 
 def gen_mstore_evmmax_elem(dst_slot: int, val: int, limb_count: int) -> str:
-    assert dst_slot >= 0 and dst_slot < 11, "invalid dst_slot"
+    assert dst_slot >= 0 and dst_slot <= 255, "invalid dst_slot"
 
     evm_words = int_to_evm_words(val, limb_count)
     result = ""
@@ -197,8 +198,10 @@ def gen_arith_loop_benchmark(op: str, limb_count: str) -> str:
     x2 = (mod - 1) >> 63
     y2 = (mod - 1) >> 63
     store_inputs2 = gen_mstore_evmmax_elem(3, x_input, limb_count) + gen_mstore_evmmax_elem(4, y_input, limb_count)
+
+    pop_max_evmmax_mem = gen_mstore_evmmax_elem(255, x_input, limb_count)
     
-    bench_start = setmod + store_inputs + store_inputs2
+    bench_start = setmod + store_inputs + store_inputs2 + pop_max_evmmax_mem
     loop_body = ""
 
     empty_bench_len = int(len(gen_loop().format(bench_start, "", gen_push_int(258))) / 2)
@@ -211,7 +214,11 @@ def gen_arith_loop_benchmark(op: str, limb_count: str) -> str:
     inner_loop_evmmax_op_count = 0
 
     for i in range(iter_count):
-        loop_body += gen_evmmax_op(op, 0, 1, 2)
+        out_slot = random.randint(0, 255)
+        x_slot = random.randint(0, 255)
+        y_slot =random.randint(0, 255)
+
+        loop_body += gen_evmmax_op(op, out_slot, x_slot, y_slot)
         inner_loop_evmmax_op_count += 1
 
     res = gen_loop().format(bench_start, loop_body, gen_push_int(int(len(bench_start) / 2) + 33))
