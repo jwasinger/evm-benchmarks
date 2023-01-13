@@ -5,6 +5,7 @@ import subprocess
 import random
 import os
 import shutil
+import json
 
 EVMMAX_ARITH_ITER_COUNT = 1
 
@@ -299,8 +300,11 @@ def default_run():
         for limb_count in range(1, 16):
             bench_code, evmmax_op_count = gen_arith_loop_benchmark(arith_op_name, limb_count)
 
-            with open('benchmarks/{}-{}.hex'.format(arith_op_name, limb_count), 'w') as f:
-                f.write(bench_code)
+            with open('benchmarks/{}-{}.json'.format(arith_op_name, limb_count), 'w') as f:
+                f.write(json.dumps({
+                    "evmmax_op_count": evmmax_op_count,
+                    "bench_code": bench_code
+                }))
 
 def bench_one(op, start, end):
     for limb_count in range(start, end+1):
