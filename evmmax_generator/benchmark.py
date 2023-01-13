@@ -3,14 +3,16 @@ import os
 import subprocess
 import json
 import math
+import glob
+import re
 
-def bench_geth(code: str) -> int:
+def bench_geth(code_file: str) -> int:
     geth_path = "go-ethereum/build/bin/evm"
     if os.getenv('GETH_EVM') != None:
         geth_path = os.getenv('GETH_EVM')
 
     geth_exec = os.path.join(os.getcwd(), geth_path)
-    geth_cmd = "{} --code {} --bench run".format(geth_exec, code)
+    geth_cmd = "{} --codefile {} --bench run".format(geth_exec, code_file)
     result = subprocess.run(geth_cmd.split(' '), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
         raise Exception("geth exec error: {}".format(result.stderr))
@@ -20,7 +22,6 @@ def bench_geth(code: str) -> int:
     if exec_time.endswith("ms"):
         exec_time = int(float(exec_time[:-2]) * 1000000)
     elif exec_time.endswith("\\xc2\\xb5s"):
-        import pdb; pdb.set_trace()
         exec_time = int(float(exec_time[:-9]) * 1000)
     elif exec_time.endswith("s"):
         exec_time = int(float(exec_time[:-1]) * 1000000 * 1000)
@@ -45,19 +46,17 @@ LOOP_ITERATIONS = 255
 def default_run():
     # TODO remove previous benchmarks dir content
 
-    for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
-        for limb_count in range(1, 16):
-            benchmark_file = os.path.join(os.getcwd(), "benchmarks/{}-{}.json".format(arith_op_name,limb_count))
-            with open(benchmark_file) as f:
-                benchmark = json.load(f)
-                for i in range(5):
-                    import pdb; pdb.set_trace()
-                    exec_time = bench_geth(benchmark['bench_code'])
-                    evmmax_op_count = benchmark['evmmax_op_count']
+    for arith_op_name in ["MULMONTX"]:#["ADDMODX", "SUBMODX", "MULMONTX"]:
+        for limb_count in range(6, 16):
+            benchmark_file = glob.glob(os.path.join(os.getcwd(), "benchmarks/{}-{}-*.hex".format(arith_op_name, limb_count)))[0]
+            evmmax_op_count = re.match("{}-{}-(.*)\.hex".format(arith_op_name, limb_count), benchmark_file.split('/')[-1]).groups()[0]
+            evmmax_op_count = int(evmmax_op_count)
 
-                    setmod_est_time = 0 # TODO
-                    est_time = math.ceil((exec_time) / (evmmax_op_count * LOOP_ITERATIONS))
-                    print("{},{},{}".format(arith_op_name, limb_count, est_time))
+            for i in range(1):
+                exec_time = bench_geth(benchmark_file)
+                setmod_est_time = 0 # TODO
+                est_time = math.ceil((exec_time) / (evmmax_op_count * LOOP_ITERATIONS))
+                print("{},{},{}".format(arith_op_name, limb_count, est_time))
 
     #print("op name, limb count, estimated runtime (ns)")
     print("op name, input size (in 8-byte increments), opcode runtime est (ns)")

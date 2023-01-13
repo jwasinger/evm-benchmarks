@@ -5,7 +5,6 @@ import subprocess
 import random
 import os
 import shutil
-import json
 
 EVMMAX_ARITH_ITER_COUNT = 1
 
@@ -196,13 +195,13 @@ def gen_arith_loop_benchmark(op: str, limb_count: str) -> str:
     # mod_mem = limb_count * 8 * 4 # the offset of the first word beyond the end of the last slot we will use
     # expand_memory = gen_mstore_int(end_mem, 0)
 
-    x_input, y_input = gen_evmmax_worst_input(op, limb_count)
+    x_input, y_input = 0,0
     store_inputs = gen_mstore_evmmax_elem(1, x_input, limb_count) + gen_mstore_evmmax_elem(2, y_input, limb_count)
-    x2 = (mod - 1) >> 63
-    y2 = (mod - 1) >> 63
+    x2 = 0
+    y2 = 0
     store_inputs2 = gen_mstore_evmmax_elem(3, x_input, limb_count) + gen_mstore_evmmax_elem(4, y_input, limb_count)
 
-    pop_max_evmmax_mem = gen_mstore_evmmax_elem(255, x_input, limb_count)
+    pop_max_evmmax_mem = gen_mstore_literal("01", limb_count*8*256)
     
     bench_start = setmod + store_inputs + store_inputs2 + pop_max_evmmax_mem
     loop_body = ""
@@ -300,11 +299,8 @@ def default_run():
         for limb_count in range(1, 16):
             bench_code, evmmax_op_count = gen_arith_loop_benchmark(arith_op_name, limb_count)
 
-            with open('benchmarks/{}-{}.json'.format(arith_op_name, limb_count), 'w') as f:
-                f.write(json.dumps({
-                    "evmmax_op_count": evmmax_op_count,
-                    "bench_code": bench_code
-                }))
+            with open('benchmarks/{}-{}-{}.hex'.format(arith_op_name, limb_count, evmmax_op_count), 'w') as f:
+                f.write(bench_code)
 
 def bench_one(op, start, end):
     for limb_count in range(start, end+1):
