@@ -58,15 +58,6 @@ def default_run():
                 est_time = math.ceil((exec_time) / (evmmax_op_count * LOOP_ITERATIONS))
                 print("{},{},{}".format(arith_op_name, limb_count, est_time))
 
-    #print("op name, limb count, estimated runtime (ns)")
-    print("op name, input size (in 8-byte increments), opcode runtime est (ns)")
-    for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
-        for limb_count in range(1, 16):
-            bench_code, evmmax_op_count = gen_arith_loop_benchmark(arith_op_name, limb_count)
-
-            with open('benchmarks/{}-{}.hex'.format(arith_op_name, limb_count), 'w') as f:
-                f.write(bench_code)
-
 def bench_one(op, start, end):
     for limb_count in range(start, end+1):
         for i in range(5):
