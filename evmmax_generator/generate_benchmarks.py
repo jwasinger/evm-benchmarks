@@ -3,6 +3,8 @@ import os
 import sys
 import subprocess
 import random
+import os
+import shutil
 
 EVMMAX_ARITH_ITER_COUNT = 1
 
@@ -257,8 +259,10 @@ def bench_geth(code: str) -> int:
 
     if exec_time.endswith("ms"):
         exec_time = int(float(exec_time[:-2]) * 1000000)
-    elif exec_time.endswith("s"):
+    elif exec_time.endswith("\\xc2\\xb5s"):
         import pdb; pdb.set_trace()
+        exec_time = int(float(exec_time[:-9]) * 1000)
+    elif exec_time.endswith("s"):
         exec_time = int(float(exec_time[:-1]) * 1000000 * 1000)
     else:
         raise Exception("unknown timestamp ending: {}".format(exec_time))
@@ -284,20 +288,19 @@ def bench_run(benches):
             print("{},{},{}".format(op_name, limb_count, est_time))
 
 def default_run():
+    # TODO remove previous benchmarks dir content
+
+    shutil.rmtree('benchmarks', ignore_errors=True)
+    os.makedirs(os.path.join(os.getcwd(), "benchmarks"))
+
     #print("op name, limb count, estimated runtime (ns)")
     print("op name, input size (in 8-byte increments), opcode runtime est (ns)")
     for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
-        for limb_count in range(1, 17):
-            for i in range(5):
-                evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(arith_op_name, limb_count) 
+        for limb_count in range(1, 16):
+            bench_code, evmmax_op_count = gen_arith_loop_benchmark(arith_op_name, limb_count)
 
-                #push3_pop_bench_time = bench_geth(gen_push3_pop_loop_benchmark(evmmax_op_count))
-                setmod_est_time = 0 # TODO
-
-                est_time = round((evmmax_bench_time - setmod_est_time) / (evmmax_op_count * LOOP_ITERATIONS), 2)
-                #print("{} - {} limbs - {} ns/op".format(arith_op_name, limb_count, est_time))
-                print("{},{},{}".format(arith_op_name, limb_count, est_time))
-        #print()
+            with open('benchmarks/{}-{}.hex'.format(arith_op_name, limb_count), 'w') as f:
+                f.write(bench_code)
 
 def bench_one(op, start, end):
     for limb_count in range(start, end+1):
