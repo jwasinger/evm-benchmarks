@@ -61,14 +61,14 @@ def int_to_evm_words(val: int, evm384_limb_count: int) -> [str]:
         if len(limb_hex) % 2 != 0:
             limb_hex = "0" + limb_hex
 
-        #limb_hex = reverse_endianess(limb_hex)
+        limb_hex = reverse_endianess(limb_hex)
         if len(limb_hex) < 64:
             limb_hex += (64 - len(limb_hex)) * "0"
 
         result.append(limb_hex)
 
-    # if len(result) * 32 < evm384_limb_count * LIMB_SIZE:
-    #    result = ['00'] * math.ceil((evm384_limb_count * LIMB_SIZE - len(result) * 32) / 32) + result
+    if len(result) * 32 < evm384_limb_count * LIMB_SIZE:
+        result = ['00'] * math.ceil((evm384_limb_count * LIMB_SIZE - len(result) * 32) / 32) + result
 
     return list(reversed(result))
 
