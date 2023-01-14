@@ -58,15 +58,17 @@ def default_run():
                 est_time = math.ceil((exec_time) / (evmmax_op_count * LOOP_ITERATIONS))
                 print("{},{},{}".format(arith_op_name, limb_count, est_time))
 
-def bench_one(op, start, end):
+def bench_one(arith_op_name, start, end):
     for limb_count in range(start, end+1):
+        benchmark_file = glob.glob(os.path.join(os.getcwd(), "benchmarks/{}-{}-*.hex".format(arith_op_name, limb_count)))[0]
+        evmmax_op_count = re.match("{}-{}-(.*)\.hex".format(arith_op_name, limb_count), benchmark_file.split('/')[-1]).groups()[0]
+        evmmax_op_count = int(evmmax_op_count)
+
         for i in range(5):
-            evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(op, limb_count) 
-
-            setmod_est_time = 0 # TODO
-
-            est_time = round((evmmax_bench_time - setmod_est_time) / (evmmax_op_count * LOOP_ITERATIONS), 2)
-            print("{},{},{}".format(op, limb_count, est_time))
+                exec_time = bench_geth(benchmark_file)
+                setmod_est_time = 0 # TODO
+                est_time = math.ceil((exec_time) / (evmmax_op_count * LOOP_ITERATIONS))
+                print("{},{},{}".format(arith_op_name, limb_count, est_time))
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
