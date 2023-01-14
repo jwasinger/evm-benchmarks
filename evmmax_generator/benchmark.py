@@ -46,13 +46,13 @@ LOOP_ITERATIONS = 255
 def default_run():
     # TODO remove previous benchmarks dir content
 
-    for arith_op_name in ["MULMONTX"]:#["ADDMODX", "SUBMODX", "MULMONTX"]:
-        for limb_count in range(6, 16):
+    for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
+        for limb_count in range(1, 16):
             benchmark_file = glob.glob(os.path.join(os.getcwd(), "benchmarks/{}-{}-*.hex".format(arith_op_name, limb_count)))[0]
             evmmax_op_count = re.match("{}-{}-(.*)\.hex".format(arith_op_name, limb_count), benchmark_file.split('/')[-1]).groups()[0]
             evmmax_op_count = int(evmmax_op_count)
 
-            for i in range(1):
+            for i in range(5):
                 exec_time = bench_geth(benchmark_file)
                 setmod_est_time = 0 # TODO
                 est_time = math.ceil((exec_time) / (evmmax_op_count * LOOP_ITERATIONS))
