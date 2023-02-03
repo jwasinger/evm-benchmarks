@@ -47,7 +47,7 @@ def default_run():
     # TODO remove previous benchmarks dir content
 
     for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
-        for limb_count in range(1, 16):
+        for limb_count in range(6, 7):
             benchmark_file = glob.glob(os.path.join(os.getcwd(), "benchmarks/{}-{}-*.hex".format(arith_op_name, limb_count)))[0]
             evmmax_op_count = re.match("{}-{}-(.*)\.hex".format(arith_op_name, limb_count), benchmark_file.split('/')[-1]).groups()[0]
             evmmax_op_count = int(evmmax_op_count)
