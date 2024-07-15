@@ -1,21 +1,25 @@
 import math
 import os
+import random
 import sys
 import subprocess
 
+import numpy as np
+
 EVMMAX_ARITH_ITER_COUNT = 1
 
-MAX_LIMBS = 11
+MAX_LIMBS = 12
 
 EVMMAX_ARITH_OPS = {
-    "ADDMODX": "22",
-    "SUBMODX": "23",
-    "MULMONTX": "24",
+    "ADDMODX": "c3",
+    "SUBMODX": "c4",
+    "MULMONTX": "c5",
 }
 
 LIMB_SIZE = 8
 
-SETMOD_OP = "21"
+OP_SETMOD = "c0"
+OP_STOREX = "c2"
 
 EVM_OPS = {
     "POP": "50",
@@ -39,8 +43,8 @@ def calc_limb_count(val: int) -> int:
         count += 1
     return count
 
-# split a value into 256bit big-endian words, return them in little-endian format
-def int_to_evm_words(val: int, evm384_limb_count: int) -> [str]:
+# split a value into 256bit big-endian words, return them in big-endian format
+def int_to_evm_words(val: int, res_size: int) -> [str]:
     result = []
     if val == 0:
         return ['00']
@@ -58,16 +62,12 @@ def int_to_evm_words(val: int, evm384_limb_count: int) -> [str]:
         if len(limb_hex) % 2 != 0:
             limb_hex = "0" + limb_hex
 
-        #limb_hex = reverse_endianess(limb_hex)
         if len(limb_hex) < 64:
             limb_hex += (64 - len(limb_hex)) * "0"
 
         result.append(limb_hex)
 
-    # if len(result) * 32 < evm384_limb_count * LIMB_SIZE:
-    #    result = ['00'] * math.ceil((evm384_limb_count * LIMB_SIZE - len(result) * 32) / 32) + result
-
-    return list(reversed(result))
+    return result
 
 def gen_push_int(val: int) -> str:
     assert val >= 0 and val < (1 << 256), "val must be in acceptable evm word range"
@@ -101,21 +101,60 @@ def reverse_endianess(val: str):
 
     return result
 
-def gen_mstore_evmmax_elem(dst_slot: int, val: int, limb_count: int) -> str:
-    assert dst_slot >= 0 and dst_slot < 11, "invalid dst_slot"
+def gen_random_val(modulus: int) -> int:
+    return random.randrange(0, modulus)
 
-    evm_words = int_to_evm_words(val, limb_count)
+def calc_field_elem_size(mod: int) -> int:
+    mod_byte_count = int(math.ceil(len(hex(mod)[2:]) / 2))
+    mod_u64_count = (mod_byte_count - 7) // 8
+    return mod_u64_count * 8
+
+def gen_random_scratch_space(dst_mem_offset: int, mod: int, scratch_count: int) -> str:
+    field_elem_size = calc_field_elem_size(mod)
+    # allocate the scratch space: store 0 at the last byte
+    res = gen_mstore_int(0, dst_mem_offset + field_elem_size * scratch_count)
+
+    for i in range(scratch_count):
+        res += gen_mstore_field_elem(dst_mem_offset + i * field_elem_size, gen_random_val(mod), field_elem_size // 8)
+
+    return res
+
+
+# store a 64bit aligned field element (size limb_count * 8 bytes) in big-endian
+# repr to EVM memory
+def gen_mstore_field_elem(dst_offset: int, val: int, field_width_bytes: int) -> str:
+    evm_words = int_to_evm_words(val, field_width_bytes)
     result = ""
-    offset = dst_slot * limb_count * LIMB_SIZE
+    offset = dst_offset
     for word in evm_words:
         result += gen_mstore_literal(word, offset)
         offset += 32
 
     return result
 
-def gen_encode_evmmax_bytes(*args):
+# store a value at a memory offset in big-endian
+def gen_mstore_bigint(dst_offset: int, val: int) -> str:
+    evm_words = int_to_evm_words(val, limb_count)
     result = ""
-    for b1 in args:
+    for word in evm_words:
+        result += gen_mstore_literal(word, dst_offset)
+        dst_offset += 32
+
+    return result
+
+def gen_storex(dst_slot: int, count: int, src_offset: int) -> str:
+    return gen_push_int(src_offset) + gen_push_int(count) + gen_push_int(dst_slot) + OP_STOREX
+
+
+def size_bytes(val: int) -> int:
+    val_hex = hex(val)[2:]
+    if len(val_hex) % 2 != 0:
+        val_hex = '0'+val_hex
+    return len(val_hex) // 2
+
+def gen_encode_arith_immediate(out, x, y) -> str:
+    result = ""
+    for b1 in [out, x, y]:
         assert b1 >= 0 and b1 < 256, "argument must be in byte range"
 
         b1 = hex(b1)[2:]
@@ -132,108 +171,59 @@ def encode_single_byte(val: int) -> str:
         result = '0' + result
     return result
 
-def gen_setmod(slot: int, mod: int) -> str:
-    limb_count = calc_limb_count(mod)
-    result = gen_mstore_evmmax_elem(slot, mod, limb_count)
-    result += gen_push_literal(encode_single_byte(0))
-    result += gen_push_literal(encode_single_byte(limb_count))
-    result += gen_push_literal(encode_single_byte(slot))
-    result += SETMOD_OP
+def gen_setmod(mod: int) -> str:
+    mod_size = size_bytes(mod)
+    field_elem_size = calc_field_elem_size(mod)
+
+    result = gen_mstore_field_elem(0, mod, field_elem_size) # store big-endian modulus to memory at offset 0
+    result += gen_push_literal(encode_single_byte(0)) # source offset
+    result += gen_push_int(mod_size) # mod size
+    result += gen_push_int(0) # mod-id, not used
+    result += OP_SETMOD 
     return result
 
-# return modulus roughly in the middle of the range that can be represented with limb_count
-#def gen_mod(limb_count: int) -> int:
-#    mod = (1 << ((limb_count - 1) * LIMB_SIZE * 8 + 8)) - 1
-#    return mod
-
-def gen_mod(limb_count: int) -> int:
-    return (1 << (limb_count * LIMB_SIZE * 8)) - 1
-
-def worst_case_mulmontmax_input(limb_count: int) -> (int, int):
-    mod = gen_mod(limb_count)
-    r = 1 << (limb_count * LIMB_SIZE * 8)
-    r_inv = pow(-mod, -1, r)
-    
-    # TODO this is the "pseudo worst-case" input for the CIOS algorithm from gnark-crypto
-    # It does a final subtraction, but the final check if output>modulus is determined because
-    # the output occupies limb_count + 1 limbs
-    return 1, 1
-
-def worst_case_addmodmax_inputs(limb_count: int) -> (int, int):
-    mod = gen_mod(limb_count)
-    x = mod - 2
-
-    return x, 1
-
-def worst_case_submodmax_inputs(limb_count: int) -> (int, int):
-    return 1, 0
-
-# generate the slowest inputs for the maximum modulus representable by limb_count limbs
-def gen_evmmax_worst_input(op: str, limb_count: int) -> (int, int):
-    if op == "MULMONTX":
-        # TODO generate inputs to make the final subtraction happen
-        return worst_case_mulmontmax_input(limb_count)
-    elif op == "ADDMODX":
-        return worst_case_addmodmax_inputs(limb_count)
-    elif op == "SUBMODX":
-        return worst_case_submodmax_inputs(limb_count)
-    else:
-        raise Exception("unknown evmmax arith op")
-
-def gen_evmmax_op(op: str, out_slot: int, x_slot: int, y_slot: int) -> str:
-    return EVMMAX_ARITH_OPS[op] + gen_encode_evmmax_bytes(out_slot, x_slot, y_slot)
+def gen_arith_op(op: str, out_slot: int, x_slot: int, y_slot: int) -> str:
+    return EVMMAX_ARITH_OPS[op] + gen_encode_arith_immediate(out_slot, x_slot, y_slot)
 
 MAX_CONTRACT_SIZE = 24576
 
-def gen_arith_loop_benchmark(op: str, limb_count: str) -> str:
-    mod = gen_mod(limb_count)
-    setmod = gen_setmod(0, mod)
 
-    # mod_mem = limb_count * 8 * 4 # the offset of the first word beyond the end of the last slot we will use
-    # expand_memory = gen_mstore_int(end_mem, 0)
+def gen_benchmark(op: str, mod: int):
+    bench_code = ""
 
-    x_input, y_input = gen_evmmax_worst_input(op, limb_count)
-    store_inputs = gen_mstore_evmmax_elem(1, x_input, limb_count) + gen_mstore_evmmax_elem(2, y_input, limb_count)
-    x2 = (mod - 1) >> 63
-    y2 = (mod - 1) >> 63
-    store_inputs2 = gen_mstore_evmmax_elem(3, x_input, limb_count) + gen_mstore_evmmax_elem(4, y_input, limb_count)
-    
-    bench_start = setmod + store_inputs + store_inputs2
-    loop_body = ""
+    # setmod
+    bench_code += gen_setmod(mod)
 
-    empty_bench_len = int(len(gen_loop().format(bench_start, "", gen_push_int(258))) / 2)
-    free_size = MAX_CONTRACT_SIZE - empty_bench_len
-    iter_size = 4 # EVMMAX_ARITH_OPCODE + 3 byte immediate
-    # iter_count = math.floor(free_size / 5)
-    # import pdb; pdb.set_trace()
+    # store inputs
+    bench_code += gen_random_scratch_space(0, mod, 256)
+
+    # storex
+    bench_code += gen_storex(0, 256, 0)
+
+    # loop
+
+    arr = np.array([i for i in range(256)])
+    p1 = np.random.permutation(arr)
+    p2 = np.random.permutation(arr)
+    p3 = np.random.permutation(arr)
+
+    scratch_space_vals = [(p1[i], p2[i], p3[i]) for i in range(len(arr))]
+    # TODO: generate the calls
     iter_count = 5000
 
-    inner_loop_evmmax_op_count = 0
+    inner_loop_arith_op_count = 0
+    loop_body = ""
 
     for i in range(iter_count):
-        loop_body += gen_evmmax_op(op, 0, 1, 2)
-        inner_loop_evmmax_op_count += 1
+        loop_body += gen_arith_op(op, p1[i % len(arr)], p2[i % len(arr)], p3[i % len(arr)])
+        inner_loop_arith_op_count += 1
 
-    res = gen_loop().format(bench_start, loop_body, gen_push_int(int(len(bench_start) / 2) + 33))
-    # assert len(res) / 2 <= MAX_CONTRACT_SIZE, "benchmark greater than max contract size"
-    return res, inner_loop_evmmax_op_count 
+    bench_code = gen_loop().format(bench_code, loop_body, gen_push_int(int(len(bench_code) / 2) + 33))
+    return bench_code, inner_loop_arith_op_count 
+# bench some evm bytecode and return the runtime in ns
 
 def gen_loop() -> str:
     return "{}7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff015b{}60010180{}57"
-
-def gen_push3_pop_loop_benchmark(count: int) -> str:
-    loop_body = ""
-    for i in range(count):
-        if i % 2 == 0:
-            loop_body += gen_push_literal(gen_encode_evmmax_bytes(1, 2, 5))
-        else:
-            loop_body += gen_push_literal(gen_encode_evmmax_bytes(3, 4, 5))
-
-        loop_body += EVM_OPS["POP"]
-
-    return gen_loop().format("", loop_body, gen_push_int(33))
-
-# bench some evm bytecode and return the runtime in ns
 
 def bench_geth(code: str) -> int:
     geth_path = "go-ethereum/build/bin/evm"
@@ -260,8 +250,12 @@ def bench_geth(code: str) -> int:
 
 LOOP_ITERATIONS = 255
 
-def bench_geth_evmmax(arith_op_name: str, limb_count: int) -> (int, int):
-    bench_code, evmmax_op_count = gen_arith_loop_benchmark(arith_op_name, limb_count)
+# return a value between [1<<min_size_bits, 1<<max_size_bits)
+def gen_random_mod(min_size_bits: int, max_size_bits: int):
+    return random.randrange(1 << min_size_bits, 1 << max_size_bits)
+
+def generate_and_run_benchmark(arith_op_name: str, mod: int) -> (int, int):
+    bench_code, evmmax_op_count = gen_benchmark(arith_op_name, mod)
 
     return bench_geth(bench_code), evmmax_op_count
 
@@ -276,25 +270,22 @@ def bench_run(benches):
             #print("{} - {} limbs - {} ns/op".format(arith_op_name, limb_count, est_time))
             print("{},{},{}".format(op_name, limb_count, est_time))
 
-def default_run():
-    #print("op name, limb count, estimated runtime (ns)")
+def bench_all():
     print("op name, input size (in 8-byte increments), opcode runtime est (ns)")
     for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
         for limb_count in range(1, 17):
+            mod = gen_random_mod(limb_count * 8 * 8, (limb_count + 1) * 8 * 8)
+            bench_code, arith_op_count = gen_benchmark(arith_op_name, mod)
+
             for i in range(5):
-                evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(arith_op_name, limb_count) 
+                evmmax_bench_time, evmmax_op_count = bench_geth(arith_op_name) 
+                bench_time = bench_geth(bench_code)
 
-                #push3_pop_bench_time = bench_geth(gen_push3_pop_loop_benchmark(evmmax_op_count))
-                setmod_est_time = 0 # TODO
-
-                est_time = round((evmmax_bench_time - setmod_est_time) / (evmmax_op_count * LOOP_ITERATIONS), 2)
-                #print("{} - {} limbs - {} ns/op".format(arith_op_name, limb_count, est_time))
-                print("{},{},{}".format(arith_op_name, limb_count, est_time))
-        #print()
+                print("bench time is {}".format(bench_time))
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
-        default_run()
+        bench_all()
     elif len(sys.argv) >= 2:
         op = sys.argv[1]
         if op != "ADDMODX" and op != "SUBMODX" and op != "MULMONTX":
