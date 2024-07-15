@@ -43,31 +43,23 @@ def calc_limb_count(val: int) -> int:
         count += 1
     return count
 
-# split a value into 256bit big-endian words, return them in big-endian format
+# split a value into EVM word-sized chunks in the order that they
+# will be mstore'd to place the big-endian value in memory (word this better...)
 def int_to_evm_words(val: int, res_size: int) -> [str]:
     result = []
     if val == 0:
         return ['00']
 
-    og_val = val
-    while val != 0:
-        limb = val % (1 << 256)
-        val >>= 256
+    val_hex = hex(val)[2:]
+    if len(val_hex) % 2 != 0:
+        val_hex = "0"+val_hex
 
-        if limb == 0:
-            result.append("00")
-            continue
+    val_evm_word_size = math.ceil(len(val_hex) / 64)
 
-        limb_hex = hex(limb)[2:]
-        if len(limb_hex) % 2 != 0:
-            limb_hex = "0" + limb_hex
+    if val_evm_word_size * 64 > len(val_hex):
+        val_hex += "0"*(val_evm_word_size*64 - len(val_hex))
 
-        if len(limb_hex) < 64:
-            limb_hex += (64 - len(limb_hex)) * "0"
-
-        result.append(limb_hex)
-
-    return result
+    return [val_hex[i:i+64] for i in range(0, len(val_hex), 64)]
 
 def gen_push_int(val: int) -> str:
     assert val >= 0 and val < (1 << 256), "val must be in acceptable evm word range"
@@ -87,8 +79,8 @@ def gen_push_literal(val: str) -> str:
 
     return push_op + val
 
-def gen_mstore_int(val: int, offset: int) -> str:
-    return gen_push_int(val) + gen_push_int(offset) + EVM_OPS["MSTORE"]
+def gen_mstore_int(offset: int, val: int) -> str:
+    return gen_push_int(offset) + gen_push_int(val) + EVM_OPS["MSTORE"]
 
 def gen_mstore_literal(val: str, offset: int) -> str:
     return gen_push_literal(val) + gen_push_int(offset) + EVM_OPS["MSTORE"]
@@ -106,13 +98,13 @@ def gen_random_val(modulus: int) -> int:
 
 def calc_field_elem_size(mod: int) -> int:
     mod_byte_count = int(math.ceil(len(hex(mod)[2:]) / 2))
-    mod_u64_count = (mod_byte_count - 7) // 8
+    mod_u64_count = (mod_byte_count + 7) // 8
     return mod_u64_count * 8
 
 def gen_random_scratch_space(dst_mem_offset: int, mod: int, scratch_count: int) -> str:
     field_elem_size = calc_field_elem_size(mod)
     # allocate the scratch space: store 0 at the last byte
-    res = gen_mstore_int(0, dst_mem_offset + field_elem_size * scratch_count)
+    res = gen_mstore_int(dst_mem_offset + field_elem_size * scratch_count, 0)
 
     for i in range(scratch_count):
         res += gen_mstore_field_elem(dst_mem_offset + i * field_elem_size, gen_random_val(mod), field_elem_size // 8)
@@ -132,18 +124,8 @@ def gen_mstore_field_elem(dst_offset: int, val: int, field_width_bytes: int) -> 
 
     return result
 
-# store a value at a memory offset in big-endian
-def gen_mstore_bigint(dst_offset: int, val: int) -> str:
-    evm_words = int_to_evm_words(val, limb_count)
-    result = ""
-    for word in evm_words:
-        result += gen_mstore_literal(word, dst_offset)
-        dst_offset += 32
-
-    return result
-
-def gen_storex(dst_slot: int, count: int, src_offset: int) -> str:
-    return gen_push_int(src_offset) + gen_push_int(count) + gen_push_int(dst_slot) + OP_STOREX
+def gen_storex(dst_slot: int, src_offset: int, count: int) -> str:
+    return  gen_push_int(count) + gen_push_int(src_offset) + gen_push_int(dst_slot) + OP_STOREX
 
 
 def size_bytes(val: int) -> int:
@@ -171,13 +153,16 @@ def encode_single_byte(val: int) -> str:
         result = '0' + result
     return result
 
+SCRATCH_SPACE_SIZE=3
 def gen_setmod(mod: int) -> str:
     mod_size = size_bytes(mod)
     field_elem_size = calc_field_elem_size(mod)
 
     result = gen_mstore_field_elem(0, mod, field_elem_size) # store big-endian modulus to memory at offset 0
-    result += gen_push_literal(encode_single_byte(0)) # source offset
+
+    result += gen_push_int(SCRATCH_SPACE_SIZE) # scratch space field element count
     result += gen_push_int(mod_size) # mod size
+    result += gen_push_literal(encode_single_byte(0)) # source offset for modulus
     result += gen_push_int(0) # mod-id, not used
     result += OP_SETMOD 
     return result
@@ -195,14 +180,14 @@ def gen_benchmark(op: str, mod: int):
     bench_code += gen_setmod(mod)
 
     # store inputs
-    bench_code += gen_random_scratch_space(0, mod, 256)
+    bench_code += gen_random_scratch_space(0, mod, SCRATCH_SPACE_SIZE)
 
     # storex
-    bench_code += gen_storex(0, 256, 0)
+    bench_code += gen_storex(0, 0, SCRATCH_SPACE_SIZE)
 
     # loop
 
-    arr = np.array([i for i in range(256)])
+    arr = np.array([i for i in range(SCRATCH_SPACE_SIZE)])
     p1 = np.random.permutation(arr)
     p2 = np.random.permutation(arr)
     p3 = np.random.permutation(arr)
@@ -225,13 +210,13 @@ def gen_benchmark(op: str, mod: int):
 def gen_loop() -> str:
     return "{}7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff015b{}60010180{}57"
 
-def bench_geth(code: str) -> int:
+def bench_geth(code_file: str) -> int:
     geth_path = "go-ethereum/build/bin/evm"
     if os.getenv('GETH_EVM') != None:
         geth_path = os.getenv('GETH_EVM')
 
     geth_exec = os.path.join(os.getcwd(), geth_path)
-    geth_cmd = "{} --code {} --bench run".format(geth_exec, code)
+    geth_cmd = "{} --codefile {} --bench run".format(geth_exec, code_file)
     result = subprocess.run(geth_cmd.split(' '), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
         raise Exception("geth exec error: {}".format(result.stderr))
@@ -241,7 +226,6 @@ def bench_geth(code: str) -> int:
     if exec_time.endswith("ms"):
         exec_time = int(float(exec_time[:-2]) * 1000000)
     elif exec_time.endswith("s"):
-        import pdb; pdb.set_trace()
         exec_time = int(float(exec_time[:-1]) * 1000000 * 1000)
     else:
         raise Exception("unknown timestamp ending: {}".format(exec_time))
@@ -252,7 +236,10 @@ LOOP_ITERATIONS = 255
 
 # return a value between [1<<min_size_bits, 1<<max_size_bits)
 def gen_random_mod(min_size_bits: int, max_size_bits: int):
-    return random.randrange(1 << min_size_bits, 1 << max_size_bits)
+    while True:
+        candidate = random.randrange(1 << min_size_bits, 1 << max_size_bits)
+        if candidate % 2 != 0:
+            return candidate
 
 def generate_and_run_benchmark(arith_op_name: str, mod: int) -> (int, int):
     bench_code, evmmax_op_count = gen_benchmark(arith_op_name, mod)
@@ -267,23 +254,27 @@ def bench_run(benches):
             setmod_est_time = 0 # TODO
 
             est_time = math.ceil((evmmax_bench_time) / (evmmax_op_count * LOOP_ITERATIONS))
-            #print("{} - {} limbs - {} ns/op".format(arith_op_name, limb_count, est_time))
             print("{},{},{}".format(op_name, limb_count, est_time))
 
 def bench_all():
     print("op name, input size (in 8-byte increments), opcode runtime est (ns)")
     for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
-        for limb_count in range(1, 17):
+        #TODO: make this loop test the lowest limb count
+        for limb_count in range(1, 12):
             mod = gen_random_mod(limb_count * 8 * 8, (limb_count + 1) * 8 * 8)
             bench_code, arith_op_count = gen_benchmark(arith_op_name, mod)
+            bench_code_file = "bench_codes/{}-{}.hex".format(arith_op_name, hex(mod)[2:12])
 
-            for i in range(5):
-                evmmax_bench_time, evmmax_op_count = bench_geth(arith_op_name) 
-                bench_time = bench_geth(bench_code)
+            with open(bench_code_file, 'w') as f:
+                f.write(bench_code)
 
-                print("bench time is {}".format(bench_time))
+            BENCH_REPEAT=1
+            for i in range(BENCH_REPEAT):
+                bench_time = bench_geth(bench_code_file) 
+                print("{}-{}: bench time is {}".format(arith_op_name, (limb_count + 1) * 64, bench_time))
 
 if __name__ == "__main__":
+    random.seed(42)
     if len(sys.argv) == 1:
         bench_all()
     elif len(sys.argv) >= 2:
