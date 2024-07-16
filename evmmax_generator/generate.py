@@ -51,8 +51,8 @@ def int_to_evm_words(val: int, res_size: int) -> [str]:
         return ['00']
 
     val_hex = hex(val)[2:]
-    if len(val_hex) % 2 != 0:
-        val_hex = "0"+val_hex
+    if len(val_hex) != res_size * 2:
+        val_hex = "0"*(res_size * 2 - len(val_hex))+val_hex
 
     val_evm_word_size = math.ceil(len(val_hex) / 64)
 
@@ -107,7 +107,7 @@ def gen_random_scratch_space(dst_mem_offset: int, mod: int, scratch_count: int) 
     res = gen_mstore_int(dst_mem_offset + field_elem_size * scratch_count, 0)
 
     for i in range(scratch_count):
-        res += gen_mstore_field_elem(dst_mem_offset + i * field_elem_size, gen_random_val(mod), field_elem_size // 8)
+        res += gen_mstore_field_elem(dst_mem_offset + i * field_elem_size, gen_random_val(mod), field_elem_size)
 
     return res
 
@@ -153,7 +153,7 @@ def encode_single_byte(val: int) -> str:
         result = '0' + result
     return result
 
-SCRATCH_SPACE_SIZE=3
+SCRATCH_SPACE_SIZE=256
 def gen_setmod(mod: int) -> str:
     mod_size = size_bytes(mod)
     field_elem_size = calc_field_elem_size(mod)
@@ -204,7 +204,8 @@ def gen_benchmark(op: str, mod: int):
         inner_loop_arith_op_count += 1
 
     bench_code = gen_loop().format(bench_code, loop_body, gen_push_int(int(len(bench_code) / 2) + 33))
-    return bench_code, inner_loop_arith_op_count 
+    return bench_code, inner_loop_arith_op_count * 256 
+
 # bench some evm bytecode and return the runtime in ns
 
 def gen_loop() -> str:
@@ -236,7 +237,7 @@ LOOP_ITERATIONS = 255
 
 # return a value between [1<<min_size_bits, 1<<max_size_bits)
 def gen_random_mod(min_size_bits: int, max_size_bits: int):
-    while True:
+   while True:
         candidate = random.randrange(1 << min_size_bits, 1 << max_size_bits)
         if candidate % 2 != 0:
             return candidate
@@ -260,7 +261,7 @@ def bench_all():
     print("op name, input size (in 8-byte increments), opcode runtime est (ns)")
     for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
         #TODO: make this loop test the lowest limb count
-        for limb_count in range(1, 12):
+        for limb_count in range(2, 12):
             mod = gen_random_mod(limb_count * 8 * 8, (limb_count + 1) * 8 * 8)
             bench_code, arith_op_count = gen_benchmark(arith_op_name, mod)
             bench_code_file = "bench_codes/{}-{}.hex".format(arith_op_name, hex(mod)[2:12])
@@ -271,7 +272,7 @@ def bench_all():
             BENCH_REPEAT=1
             for i in range(BENCH_REPEAT):
                 bench_time = bench_geth(bench_code_file) 
-                print("{}-{}: bench time is {}".format(arith_op_name, (limb_count + 1) * 64, bench_time))
+                print("{},{},{}".format(arith_op_name, limb_count, round(bench_time / arith_op_count)))
 
 if __name__ == "__main__":
     random.seed(42)
@@ -280,7 +281,6 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 2:
         op = sys.argv[1]
         if op != "ADDMODX" and op != "SUBMODX" and op != "MULMONTX":
-            print(op)
             raise Exception("unknown op")
 
         limb_count = int(sys.argv[2])
