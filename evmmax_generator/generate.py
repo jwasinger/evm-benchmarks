@@ -3,6 +3,7 @@ import os
 import random
 import sys
 import subprocess
+import tempfile
 
 import numpy as np
 
@@ -11,9 +12,9 @@ EVMMAX_ARITH_ITER_COUNT = 1
 MAX_LIMBS = 12
 
 EVMMAX_ARITH_OPS = {
-    "ADDMODX": "c3",
-    "SUBMODX": "c4",
-    "MULMONTX": "c5",
+    "addmodx": "c3",
+    "addmodx": "c4",
+    "mulmodx": "c5",
 }
 
 LIMB_SIZE = 8
@@ -43,23 +44,55 @@ def calc_limb_count(val: int) -> int:
         count += 1
     return count
 
-# split a value into EVM word-sized chunks in the order that they
-# will be mstore'd to place the big-endian value in memory (word this better...)
-def int_to_evm_words(val: int, res_size: int) -> [str]:
-    result = []
+def encode_val_for_mstore(val: int, res_size: int) -> [str]:
+    # modulus:
+    #   * assert that it fills most significant limb
+    #   less than evm word size:
+    #       * right-pad the hex literal to become evm word size
+    #   greater than evm word size:
+    #       * right-pad the hex literal to become multiple of evm word size
+    # value:
+    #   * left-pad until it is res_size
+    #   * right pad until it is a multiple of evm word size
+    pass
+
+def encode_modulus_for_mstore(mod: int) -> [str]:
+    # TODO: assert that it would fill most significant u64 limb
+    mod_hex = hex(mod)[2:]
+    if len(mod_hex) % 2 != 0:
+        mod_hex = "0"+mod_hex
+
+    if len(mod_hex) % 64 != 0:
+        padded_size = ((len(mod_hex) + 63) // 64) * 64
+        mod_hex = mod_hex + "0"*(padded_size  - len(mod_hex))
+
+    res = []
+    for i in range(0, len(mod_hex), 64):
+        res.append(mod_hex[i:i+64])
+
+    return res
+
+def encode_field_element_for_mstore(val: int, res_size: int) -> [str]:
     if val == 0:
         return ['00']
 
     val_hex = hex(val)[2:]
-    if len(val_hex) != res_size * 2:
-        val_hex = "0"*(res_size * 2 - len(val_hex))+val_hex
+    if len(val_hex) % 2 != 0:
+        val_hex = "0"+val_hex
 
-    val_evm_word_size = math.ceil(len(val_hex) / 64)
+    if len(val_hex) // 2 < res_size:
+        pad_size = res_size * 2 - len(val_hex)
+        val_hex = "0"*pad_size + val_hex
 
-    if val_evm_word_size * 64 > len(val_hex):
-        val_hex += "0"*(val_evm_word_size*64 - len(val_hex))
+    if len(val_hex) % 64 != 0:
+        padded_size = ((len(val_hex) + 63) // 64) * 64
+        val_hex = val_hex + "0"*(padded_size  - len(val_hex))
 
-    return [val_hex[i:i+64] for i in range(0, len(val_hex), 64)]
+    res = []
+    for i in range(0, len(val_hex), 64):
+        res.append(val_hex[i:i+64])
+
+    return res
 
 def gen_push_int(val: int) -> str:
     assert val >= 0 and val < (1 << 256), "val must be in acceptable evm word range"
@@ -115,7 +148,17 @@ def gen_random_scratch_space(dst_mem_offset: int, mod: int, scratch_count: int) 
 # store a 64bit aligned field element (size limb_count * 8 bytes) in big-endian
 # repr to EVM memory
 def gen_mstore_field_elem(dst_offset: int, val: int, field_width_bytes: int) -> str:
-    evm_words = int_to_evm_words(val, field_width_bytes)
+    evm_words = encode_field_element_for_mstore(val, field_width_bytes)
+    result = ""
+    offset = dst_offset
+    for word in evm_words:
+        result += gen_mstore_literal(word, offset)
+        offset += 32
+
+    return result
+
+def gen_mstore_modulus(dst_offset, mod: int) -> str:
+    evm_words = encode_modulus_for_mstore(mod)
     result = ""
     offset = dst_offset
     for word in evm_words:
@@ -158,7 +201,7 @@ def gen_setmod(mod: int) -> str:
     mod_size = size_bytes(mod)
     field_elem_size = calc_field_elem_size(mod)
 
-    result = gen_mstore_field_elem(0, mod, field_elem_size) # store big-endian modulus to memory at offset 0
+    result = gen_mstore_modulus(0, mod) # store big-endian modulus to memory at offset 0
 
     result += gen_push_int(SCRATCH_SPACE_SIZE) # scratch space field element count
     result += gen_push_int(mod_size) # mod size
@@ -238,13 +281,14 @@ LOOP_ITERATIONS = 255
 # return a value between [1<<min_size_bits, 1<<max_size_bits)
 def gen_random_mod(min_size_bits: int, max_size_bits: int):
    while True:
+       # TODO: this will generate moduli that skew towards occupying the most significant bit
+       # will want to test with more varied inputs
         candidate = random.randrange(1 << min_size_bits, 1 << max_size_bits)
         if candidate % 2 != 0:
             return candidate
 
 def generate_and_run_benchmark(arith_op_name: str, mod: int) -> (int, int):
     bench_code, evmmax_op_count = gen_benchmark(arith_op_name, mod)
-
     return bench_geth(bench_code), evmmax_op_count
 
 def bench_run(benches):
@@ -257,44 +301,29 @@ def bench_run(benches):
             est_time = math.ceil((evmmax_bench_time) / (evmmax_op_count * LOOP_ITERATIONS))
             print("{},{},{}".format(op_name, limb_count, est_time))
 
-def bench_all():
-    print("op name, input size (in 8-byte increments), opcode runtime est (ns)")
-    for arith_op_name in ["ADDMODX", "SUBMODX", "MULMONTX"]:
+def bench_range(min_limbs, max_limbs):
+    for arith_op_name in ["addmodx", "addmodx", "mulmodx"]:
         #TODO: make this loop test the lowest limb count
-        for limb_count in range(2, 12):
-            mod = gen_random_mod(limb_count * 8 * 8, (limb_count + 1) * 8 * 8)
+        for limb_count in range(min_limbs, max_limbs + 1):
+            mod = gen_random_mod((limb_count - 1) * 8 * 8 + 1, (limb_count) * 8 * 8)
             bench_code, arith_op_count = gen_benchmark(arith_op_name, mod)
-            bench_code_file = "bench_codes/{}-{}.hex".format(arith_op_name, hex(mod)[2:12])
-
-            with open(bench_code_file, 'w') as f:
-                f.write(bench_code)
+            fp = tempfile.NamedTemporaryFile()#"bench_codes/{}-{}.hex".format(arith_op_name, hex(mod)[2:12])
+            fp.write(bytes(bench_code, 'utf-8'))
 
             BENCH_REPEAT=1
             for i in range(BENCH_REPEAT):
-                bench_time = bench_geth(bench_code_file) 
-                print("{},{},{}".format(arith_op_name, limb_count, round(bench_time / arith_op_count)))
+                bench_time = bench_geth(fp.name) 
+
+                prefix = ''
+                if os.getenv('PRESET') != None:
+                    prefix = os.getenv('PRESET')
+                print("{},{},{},{}".format(prefix, arith_op_name, limb_count, round(bench_time / arith_op_count)))
 
 if __name__ == "__main__":
     random.seed(42)
     if len(sys.argv) == 1:
-        bench_all()
+        bench_range(2, 13)
     elif len(sys.argv) >= 2:
-        op = sys.argv[1]
-        if op != "ADDMODX" and op != "SUBMODX" and op != "MULMONTX":
-            raise Exception("unknown op")
-
-        limb_count = int(sys.argv[2])
-        if limb_count < 0 or limb_count > 12:
-            raise Exception("must choose limb count between 1 and 12")
-
-        if len(sys.argv) == 4:
-            if sys.argv[3] == "dumpgethcmd":
-                bench_code, evmmax_op_count = gen_arith_loop_benchmark(op, limb_count)
-                print(bench_code)
-        else:
-            bench_code, evmmax_op_count = gen_arith_loop_benchmark(op, limb_count)
-            bench_run([(op, limb_count, limb_count)])
-
+        bench_range(int(sys.argv[1]), int(sys.argv[2]))
     else:
         print("too many args")
-
