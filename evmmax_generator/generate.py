@@ -13,7 +13,7 @@ MAX_LIMBS = 12
 
 EVMMAX_ARITH_OPS = {
     "addmodx": "c3",
-    "addmodx": "c4",
+    "submodx": "c4",
     "mulmodx": "c5",
 }
 
@@ -296,13 +296,13 @@ def bench_run(benches):
         for i in range(limb_count_min, limb_count_max + 1):
             evmmax_bench_time, evmmax_op_count = bench_geth_evmmax(op_name, i) 
 
-            setmod_est_time = 0 # TODO
+            setmod_est_time = 0
 
             est_time = math.ceil((evmmax_bench_time) / (evmmax_op_count * LOOP_ITERATIONS))
             print("{},{},{}".format(op_name, limb_count, est_time))
 
 def bench_range(min_limbs, max_limbs):
-    for arith_op_name in ["addmodx", "addmodx", "mulmodx"]:
+    for arith_op_name in ["addmodx", "submodx", "mulmodx"]:
         #TODO: make this loop test the lowest limb count
         for limb_count in range(min_limbs, max_limbs + 1):
             mod = gen_random_mod((limb_count - 1) * 8 * 8 + 1, (limb_count) * 8 * 8)
@@ -322,7 +322,7 @@ def bench_range(min_limbs, max_limbs):
 if __name__ == "__main__":
     random.seed(42)
     if len(sys.argv) == 1:
-        bench_range(2, 13)
+        bench_range(1, 12)
     elif len(sys.argv) >= 2:
         bench_range(int(sys.argv[1]), int(sys.argv[2]))
     else:
